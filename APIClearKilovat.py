@@ -15,13 +15,31 @@ from scipy.stats import randint, uniform
 
 app = Flask(__name__)
 
+# Словарь для перевода названий признаков на русский
+FEATURE_NAME_TRANSLATIONS = {
+    "mean_consumption_per_area": "Среднее потребление на площадь",
+    "mean_oct_to_apr_per_area": "Среднее потребление с октября по апрель на площадь",
+    "median_consumption_per_area": "Медианное потребление на площадь",
+    "max_consumption_per_area": "Максимальное потребление на площадь",
+    "min_consumption_per_area": "Минимальное потребление на площадь",
+    "consumption_variation": "Вариация потребления",
+    "winter_consumption_ratio": "Доля зимнего потребления",
+    "residents_per_area": "Жителей на площадь",
+    "rooms_count": "Количество комнат",
+    "residents_count": "Количество жителей",
+    "high_consumption_flag": "Флаг высокого потребления",
+    "buildingType_Частный": "Тип здания: Частный",
+    "buildingType_Коммерческий": "Тип здания: Коммерческий",
+    "buildingType_Многоквартирный": "Тип здания: Многоквартирный",
+    "buildingType_Прочий": "Тип здания: Прочий"
+}
+
 # Загрузка данных
 def load_training_data(file_path="dataset_train.json"):
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         print(f"[Прогресс] Загружено {len(data)} записей из {file_path}.")
-        print(f"[Прогресс] Уникальные значения isCommercial: {set(record['isCommercial'] for record in data)}")
         return data
     except FileNotFoundError:
         print(f"[Ошибка] Файл {file_path} не найден.")
@@ -59,7 +77,6 @@ def cap_outliers(values, lower_percentile=25, upper_percentile=75, factor=1.5):
     capped_values = np.clip(values, lower_bound, upper_bound)
     return capped_values
 
-
 def prepare_features_and_target(data, mean_areas, encoder=None, fit_encoder=False):
     X_numeric, X_categorical, y = [], [], []
     feature_names_numeric = [
@@ -83,22 +100,16 @@ def prepare_features_and_target(data, mean_areas, encoder=None, fit_encoder=Fals
                 f"[Предупреждение] Пустое потребление для записи {record.get('accountId', 'unknown')}, запись пропущена.")
             continue
 
-        # Обработка выбросов
         consumption_values = cap_outliers(np.array(consumption_values))
-
-
         total_area = float(record.get("totalArea", mean_areas.get(record.get("buildingType", "Частный"), 100.0)))
         total_area = max(total_area, 1.0)
 
-        # Признаки потребления
         mean_consumption = np.mean(consumption_values) / total_area
         oct_to_apr = [v for k, v in record.get("consumption", {}).items() if int(k) in [1, 2, 3, 4, 10, 11, 12]]
         mean_oct_to_apr = np.mean(oct_to_apr) / total_area if oct_to_apr else mean_consumption
         median_consumption = np.median(consumption_values) / total_area
         max_consumption = np.max(consumption_values) / total_area
         min_consumption = np.min(consumption_values) / total_area
-
-        # Новые признаки
         consumption_variation = np.std(consumption_values) / (np.mean(consumption_values) + 1e-6)
         winter_consumption_ratio = np.mean(oct_to_apr) / (np.mean(consumption_values) + 1e-6) if oct_to_apr else 1.0
         residents_per_area = record.get("residentsCount", 1) / total_area
@@ -124,14 +135,12 @@ def prepare_features_and_target(data, mean_areas, encoder=None, fit_encoder=Fals
     X_numeric = np.array(X_numeric)
     y = np.array(y)
 
-    # Кодирование buildingType
     if fit_encoder:
         encoder = OneHotEncoder(sparse_output=True, handle_unknown='ignore')
         X_categorical_encoded = encoder.fit_transform(X_categorical)
     else:
         X_categorical_encoded = encoder.transform(X_categorical)
 
-    # Формирование имен признаков
     feature_names = list(encoder.get_feature_names_out(['buildingType'])) + feature_names_numeric
     print(f"[Прогресс] Подготовлено {len(X_numeric)} образцов с {len(feature_names)} признаками")
     return X_numeric, X_categorical_encoded, y, feature_names, encoder
@@ -158,14 +167,12 @@ def load_or_train_models():
         print("[Ошибка] Недостаточно данных для обучения или отсутствует вариативность меток.")
         raise ValueError("Недостаточно данных для обучения.")
 
-    # Нормализация числовых признаков
     print("[Прогресс] Нормализация числовых признаков...")
     scaler = RobustScaler()
     X_numeric_scaled = scaler.fit_transform(X_numeric)
     X = hstack([X_categorical_encoded, csr_matrix(X_numeric_scaled)])
     print(f"[Прогресс] Нормализация завершена.")
 
-    # Учет несбалансированности классов
     class_counts = np.bincount(y)
     scale_pos_weight = class_counts[0] / class_counts[1] if class_counts[1] > 0 else 1.0
     print(f"[Прогресс] Соотношение классов (scale_pos_weight): {scale_pos_weight:.2f}")
@@ -180,8 +187,6 @@ def load_or_train_models():
 
     if not all(os.path.exists(f) for f in model_files):
         print("[Прогресс] Обучение новых моделей...")
-
-        # RandomForest
         print("[Прогресс] Обучение RandomForest...")
         rf_param_dist = {
             'n_estimators': randint(100, 300),
@@ -196,7 +201,6 @@ def load_or_train_models():
         models[f"{model_key}_rf"] = rf_search.best_estimator_
         print(f"[Прогресс] Лучшие параметры RandomForest: {rf_search.best_params_}")
 
-        # XGBoost
         print("[Прогресс] Обучение XGBoost...")
         xgb_param_dist = {
             'n_estimators': randint(100, 300),
@@ -224,7 +228,6 @@ def load_or_train_models():
         scalers[model_key] = joblib.load(f"models/{model_key}_scaler.joblib")
         encoder = joblib.load(f"models/{model_key}_encoder.joblib")
 
-    # Проверка точности и вероятностей на тестовых данных
     print("[Прогресс] Загрузка тестовых данных...")
     test_data = load_test_data("dataset_test.json")
     X_test_numeric, X_test_categorical_encoded, y_test, _, _ = prepare_features_and_target(test_data, mean_areas,
@@ -244,9 +247,7 @@ def load_or_train_models():
             'Mean Probability (isCommercial=True)': mean_proba
         }
         print(f"[Результат] Balanced Accuracy {model_name.upper()}: {balanced_acc:.4f}")
-        print(f"[Результат] Средняя вероятность (isCommercial=True) {model_name.upper()}: {mean_proba:.4f}")
 
-    # Ансамбль
     rf_proba = models["general_rf"].predict_proba(X_test)[:, 1]
     xgb_proba = models["general_xgb"].predict_proba(X_test)[:, 1]
     ensemble_proba = (rf_proba + xgb_proba) / 2
@@ -257,7 +258,6 @@ def load_or_train_models():
         'Mean Probability (isCommercial=True)': float(np.mean(ensemble_proba))
     }
     print(f"[Результат] Balanced Accuracy ENSEMBLE: {ensemble_acc:.4f}")
-    print(f"[Результат] Средняя вероятность (isCommercial=True) ENSEMBLE: {ensemble_proba.mean():.4f}")
 
     data_store['X_test'] = X_test
     data_store['y_test'] = y_test
@@ -266,7 +266,6 @@ def load_or_train_models():
 
 load_or_train_models()
 
-# Подготовка признаков для предсказания
 def prepare_prediction_features(record, mean_areas, encoder):
     consumption_values = list(record.get("consumption", {}).values())
     if not consumption_values:
@@ -283,7 +282,6 @@ def prepare_prediction_features(record, mean_areas, encoder):
     median_consumption = np.median(consumption_values) / total_area
     max_consumption = np.max(consumption_values) / total_area
     min_consumption = np.min(consumption_values) / total_area
-
     consumption_variation = np.std(consumption_values) / (np.mean(consumption_values) + 1e-6)
     winter_consumption_ratio = np.mean(oct_to_apr) / (np.mean(consumption_values) + 1e-6) if oct_to_apr else 1.0
     residents_per_area = record.get("residentsCount", 1) / total_area
@@ -312,7 +310,6 @@ def prepare_prediction_features(record, mean_areas, encoder):
     print(f"[Прогресс] Подготовлены признаки для записи {record.get('accountId', 'unknown')}")
     return features
 
-# Предсказание
 @app.route('/predict', methods=['POST'])
 def predict():
     print("[Прогресс] Получен запрос на /predict")
@@ -324,30 +321,26 @@ def predict():
         mean_areas = compute_mean_total_area(load_training_data("dataset_train.json"))
         features = prepare_prediction_features(data, mean_areas, encoder)
 
-        # Предсказания от обеих моделей
         rf_proba = float(models["general_rf"].predict_proba(features)[0][1])
         xgb_proba = float(models["general_xgb"].predict_proba(features)[0][1])
-        # Ансамбль
         ensemble_proba = (rf_proba + xgb_proba) / 2
-        # Предсказания isCommercial
-        is_commercial_rf = bool(models["general_rf"].predict(features)[0])
-        is_commercial_xgb = bool(models["general_xgb"].predict(features)[0])
-        is_commercial_ensemble = ensemble_proba > 0.5
+
+        probability = max(rf_proba, xgb_proba, ensemble_proba)
+        is_commercial = probability > 0.5
+
+        # Перевод названий признаков
+        rf_importance = {FEATURE_NAME_TRANSLATIONS.get(name, name): float(imp) for name, imp in zip(feature_names, models["general_rf"].feature_importances_)}
+        xgb_importance = {FEATURE_NAME_TRANSLATIONS.get(name, name): float(imp) for name, imp in zip(feature_names, models["general_xgb"].feature_importances_)}
 
         predictions = {
-            'rf': rf_proba,
-            'xgb': xgb_proba,
-            'ensemble': ensemble_proba,
-            'isCommercial_rf': is_commercial_rf,
-            'isCommercial_xgb': is_commercial_xgb,
-            'isCommercial': is_commercial_ensemble
+            'accountId': data.get('accountId', 0),
+            'probability': probability,
+            'isCommercial': is_commercial,
+            'feature_importance': {
+                'rf': rf_importance,
+                'xgb': xgb_importance
+            }
         }
-
-        feature_importance = {
-            'rf': {name: float(imp) for name, imp in zip(feature_names, models["general_rf"].feature_importances_)},
-            'xgb': {name: float(imp) for name, imp in zip(feature_names, models["general_xgb"].feature_importances_)}
-        }
-        predictions['feature_importance'] = feature_importance
         print(f"[Результат] Предсказание для записи: {predictions}")
 
         return jsonify(predictions)
@@ -355,7 +348,6 @@ def predict():
         print(f"[Ошибка] Ошибка предсказания: {str(e)}")
         return jsonify({'error': f'Prediction error: {str(e)}'}), 500
 
-# Пакетное предсказание
 @app.route('/batch-predict', methods=['POST'])
 def batch_predict():
     print("[Прогресс] Получен запрос на /batch-predict")
@@ -382,14 +374,11 @@ def batch_predict():
                 print(f"[Предупреждение] Недействительная запись пропущена: {record}")
                 results.append({
                     "accountId": record.get("accountId", 0),
-                    "predictions": {
-                        'rf': 0.0,
-                        'xgb': 0.0,
-                        'ensemble': 0.0,
-                        'isCommercial_rf': False,
-                        'isCommercial_xgb': False,
-                        'isCommercial': False,
-                        'feature_importance': {name: 0.0 for name in feature_names}
+                    "probability": 0.0,
+                    "isCommercial": False,
+                    "feature_importance": {
+                        'rf': {FEATURE_NAME_TRANSLATIONS.get(name, name): 0.0 for name in feature_names},
+                        'xgb': {FEATURE_NAME_TRANSLATIONS.get(name, name): 0.0 for name in feature_names}
                     }
                 })
                 continue
@@ -397,47 +386,35 @@ def batch_predict():
             try:
                 features = prepare_prediction_features(record, mean_areas, encoder)
 
-                # Предсказания от обеих моделей
                 rf_proba = float(models["general_rf"].predict_proba(features)[0][1])
                 xgb_proba = float(models["general_xgb"].predict_proba(features)[0][1])
-                # Ансамбль
                 ensemble_proba = (rf_proba + xgb_proba) / 2
-                # Предсказания isCommercial
-                is_commercial_rf = bool(models["general_rf"].predict(features)[0])
-                is_commercial_xgb = bool(models["general_xgb"].predict(features)[0])
-                is_commercial_ensemble = ensemble_proba > 0.5
+
+                probability = max(rf_proba, xgb_proba, ensemble_proba)
+                is_commercial = probability > 0.5
+
+                rf_importance = {FEATURE_NAME_TRANSLATIONS.get(name, name): float(imp) for name, imp in zip(feature_names, models["general_rf"].feature_importances_)}
+                xgb_importance = {FEATURE_NAME_TRANSLATIONS.get(name, name): float(imp) for name, imp in zip(feature_names, models["general_xgb"].feature_importances_)}
 
                 predictions = {
-                    'rf': rf_proba,
-                    'xgb': xgb_proba,
-                    'ensemble': ensemble_proba,
-                    'isCommercial_rf': is_commercial_rf,
-                    'isCommercial_xgb': is_commercial_xgb,
-                    'isCommercial': is_commercial_ensemble
+                    'accountId': record.get('accountId', 0),
+                    'probability': probability,
+                    'isCommercial': is_commercial,
+                    'feature_importance': {
+                        'rf': rf_importance,
+                        'xgb': xgb_importance
+                    }
                 }
-
-                feature_importance = {
-                    'rf': {name: float(imp) for name, imp in zip(feature_names, models["general_rf"].feature_importances_)},
-                    'xgb': {name: float(imp) for name, imp in zip(feature_names, models["general_xgb"].feature_importances_)}
-                }
-                predictions['feature_importance'] = feature_importance
-
-                results.append({
-                    "accountId": record.get("accountId", 0),
-                    "predictions": predictions
-                })
+                results.append(predictions)
             except Exception as e:
                 print(f"[Ошибка] Ошибка обработки записи {record.get('accountId', 'unknown')}: {str(e)}")
                 results.append({
                     "accountId": record.get("accountId", 0),
-                    "predictions": {
-                        'rf': 0.0,
-                        'xgb': 0.0,
-                        'ensemble': 0.0,
-                        'isCommercial_rf': False,
-                        'isCommercial_xgb': False,
-                        'isCommercial': False,
-                        'feature_importance': {name: 0.0 for name in feature_names}
+                    "probability": 0.0,
+                    "isCommercial": False,
+                    "feature_importance": {
+                        'rf': {FEATURE_NAME_TRANSLATIONS.get(name, name): 0.0 for name in feature_names},
+                        'xgb': {FEATURE_NAME_TRANSLATIONS.get(name, name): 0.0 for name in feature_names}
                     }
                 })
 
@@ -447,7 +424,6 @@ def batch_predict():
         print(f"[Ошибка] Ошибка пакетного предсказания: {str(e)}")
         return jsonify({'error': f'Batch prediction error: {str(e)}'}), 500
 
-# Метрики
 @app.route('/metrics', methods=['GET'])
 def metrics():
     print("[Прогресс] Получен запрос на /metrics")
@@ -466,9 +442,7 @@ def metrics():
                 'Mean Probability (isCommercial=True)': mean_proba
             }
             print(f"[Результат] Balanced Accuracy {model_name.upper()}: {balanced_acc:.4f}")
-            print(f"[Результат] Средняя вероятность (isCommercial=True) {model_name.upper()}: {mean_proba:.4f}")
 
-        # Ансамбль
         rf_proba = models["general_rf"].predict_proba(X_test)[:, 1]
         xgb_proba = models["general_xgb"].predict_proba(X_test)[:, 1]
         ensemble_proba = (rf_proba + xgb_proba) / 2
@@ -479,7 +453,6 @@ def metrics():
             'Mean Probability (isCommercial=True)': float(np.mean(ensemble_proba))
         }
         print(f"[Результат] Balanced Accuracy ENSEMBLE: {ensemble_acc:.4f}")
-        print(f"[Результат] Средняя вероятность (isCommercial=True) ENSEMBLE: {ensemble_proba.mean():.4f}")
 
         return jsonify(metrics)
     except Exception as e:
