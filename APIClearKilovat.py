@@ -17,7 +17,6 @@ import os
 
 app = Flask(__name__)
 
-# Словарь для перевода названий признаков на русский
 FEATURE_NAME_TRANSLATIONS = {
     "mean_consumption_per_area": "Среднее потребление на площадь",
     "mean_oct_to_apr_per_area": "Среднее потребление с октября по апрель на площадь",
@@ -36,14 +35,12 @@ FEATURE_NAME_TRANSLATIONS = {
     "buildingType_Прочий": "Тип здания: Прочий"
 }
 
-# Глобальные переменные
 models = {}
 scalers = {}
 data_store = {}
 feature_names = []
 encoder = None
 
-# Загрузка данных
 def load_training_data(file_path="dataset_train.json"):
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -70,14 +67,12 @@ def load_test_data(file_path="dataset_test.json"):
         print(f"[Ошибка] Ошибка декодирования JSON: {str(e)}.")
         raise
 
-# Вычисление среднего totalArea для buildingType
 def compute_mean_total_area(data):
     df = pd.DataFrame(data)
     mean_areas = df.groupby('buildingType')['totalArea'].mean().to_dict()
     print(f"[Прогресс] Средние площади по типам зданий: {mean_areas}")
     return mean_areas
 
-# Обработка выбросов
 def cap_outliers(values, lower_percentile=25, upper_percentile=75, factor=1.5):
     q25, q75 = np.percentile(values, [lower_percentile, upper_percentile])
     iqr = q75 - q25
@@ -207,7 +202,7 @@ def load_or_train_models():
 
     print("[Прогресс] Загрузка данных для обучения...")
     training_data = load_training_data("dataset_train.json")
-    data_store['mean_areas'] = compute_mean_total_area(training_data)  # Кэшируем mean_areas
+    data_store['mean_areas'] = compute_mean_total_area(training_data)
     X_numeric, X_categorical_encoded, y, feature_names, encoder, account_ids = prepare_features_and_target(
         training_data, encoder=None, fit_encoder=True)
 
@@ -304,13 +299,12 @@ def predict():
         ensemble_proba = (rf_proba + xgb_proba) / 2
 
         probability_percent = float(ensemble_proba * 100)
-        is_violator = ensemble_proba > 0.5
+        is_commercial = ensemble_proba > 0.5
         moscow_tz = pytz.timezone('Europe/Moscow')
         predicted_at = datetime.now(moscow_tz).isoformat()
 
         description_reason = f"Вероятность коммерческого объекта: {probability_percent:.1f}%"
 
-        # Вычисление feature_importance (для логов)
         rf_importance = {FEATURE_NAME_TRANSLATIONS.get(name, name): float(imp) for name, imp in
                          zip(feature_names, models["general_rf"].feature_importances_)}
         xgb_importance = {FEATURE_NAME_TRANSLATIONS.get(name, name): float(imp) for name, imp in
@@ -320,7 +314,7 @@ def predict():
         predictions = {
             'account_id': data.get('accountId', 0),
             'description_reason': description_reason,
-            'is_violator': is_violator,
+            'is_commercial': is_commercial,
             'predicted_at': predicted_at
         }
         print(f"[Результат] Предсказание для записи: {predictions}")
@@ -348,7 +342,7 @@ def batch_predict():
         results = []
         total_records = len(records)
         moscow_tz = pytz.timezone('Europe/Moscow')
-        predicted_at = datetime.now(moscow_tz).isoformat()  # Московское время для всего батча
+        predicted_at = datetime.now(moscow_tz).isoformat()
 
         for i, record in enumerate(records):
             if i % 100 == 0:
@@ -359,7 +353,7 @@ def batch_predict():
                 results.append({
                     "account_id": record.get("accountId", 0),
                     "description_reason": "Вероятность коммерческого объекта: 0.0%",
-                    "is_violator": False,
+                    "is_commercial": False,
                     "predicted_at": predicted_at
                 })
                 continue
@@ -372,10 +366,9 @@ def batch_predict():
                 ensemble_proba = (rf_proba + xgb_proba) / 2
 
                 probability_percent = float(ensemble_proba * 100)
-                is_violator = ensemble_proba > 0.5
+                is_commercial = ensemble_proba > 0.5
                 description_reason = f"Вероятность коммерческого объекта: {probability_percent:.1f}%"
 
-                # Вычисление feature_importance (для логов)
                 rf_importance = {FEATURE_NAME_TRANSLATIONS.get(name, name): float(imp) for name, imp in
                                  zip(feature_names, models["general_rf"].feature_importances_)}
                 xgb_importance = {FEATURE_NAME_TRANSLATIONS.get(name, name): float(imp) for name, imp in
@@ -385,7 +378,7 @@ def batch_predict():
                 predictions = {
                     'account_id': record.get('accountId', 0),
                     'description_reason': description_reason,
-                    'is_violator': is_violator,
+                    'is_commercial': is_commercial,
                     'predicted_at': predicted_at
                 }
                 results.append(predictions)
@@ -394,7 +387,7 @@ def batch_predict():
                 results.append({
                     "account_id": record.get("accountId", 0),
                     "description_reason": "Вероятность коммерческого объекта: 0.0%",
-                    "is_violator": False,
+                    "is_commercial": False,
                     "predicted_at": predicted_at
                 })
 
@@ -408,7 +401,6 @@ def batch_predict():
 def retrain():
     print("[Прогресс] Получен запрос на /retrain")
     try:
-        # Загружаем данные
         training_data = load_training_data("dataset_train.json")
         print(f"[Прогресс] Загружено {len(training_data)} записей для дообучения.")
 
@@ -433,7 +425,6 @@ def retrain():
 
         model_key = "general"
 
-
         print("[Прогресс] Дообучение RandomForest...")
         rf_param_dist = {
             'n_estimators': randint(100, 300),
@@ -447,7 +438,6 @@ def retrain():
         rf_search.fit(X, y)
         models[f"{model_key}_rf"] = rf_search.best_estimator_
         print(f"[Прогресс] Лучшие параметры RandomForest: {rf_search.best_params_}")
-
 
         print("[Прогресс] Дообучение XGBoost...")
         xgb_param_dist = {
@@ -463,7 +453,6 @@ def retrain():
         models[f"{model_key}_xgb"] = xgb_search.best_estimator_
         print(f"[Прогресс] Лучшие параметры XGBoost: {xgb_search.best_params_}")
 
-        # Сохранение обновленных моделей
         print("[Прогресс] Сохранение обновленных моделей...")
         joblib.dump(models[f"{model_key}_rf"], f"models/{model_key}_rf.joblib")
         joblib.dump(models[f"{model_key}_xgb"], f"models/{model_key}_xgb.joblib")
@@ -508,7 +497,6 @@ def metrics():
     except Exception as e:
         print(f"[Ошибка] Ошибка вычисления метрик: {str(e)}")
         return jsonify({'error': f'Metrics error: {str(e)}'}), 500
-
 
 load_or_train_models()
 
